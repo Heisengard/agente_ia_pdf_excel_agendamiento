@@ -1,0 +1,9 @@
+streamlit
+pandas
+openpyxl
+langchain
+langchain-openai
+langchain-community
+faiss-cpu
+langgraph
+faker

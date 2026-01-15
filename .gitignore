@@ -1,0 +1,15 @@
+# Archivos de sistema y entorno
+.DS_Store
+.venv/
+__pycache__/
+
+# Archivos de datos sensibles o locales
+# (Opcional: Si quieres compartir los datos ficticios, borra estas lineas de abajo.
+#  Si fueran datos reales de pacientes, DEBES dejarlas aquí).
+*.pdf
+
+# Streamlit
+.streamlit/
+
+# Claves y secretos
+.env
