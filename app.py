@@ -1,9 +1,14 @@
 import streamlit as st
 import os
 import tempfile
-import pandas as pd # <--- NUEVO: Para leer el Excel
+import pandas as pd 
 from typing import Annotated, List
 from typing_extensions import TypedDict
+
+# --- CONFIGURACIÓN INICIAL ---
+# CAMBIA ESTO si tu archivo está en otra carpeta. 
+# Si está junto al script, déjalo así.
+RUTA_DIRECTORIO = "data/excel/dataset_medicos_ficticio.xlsx" 
 
 # --- INICIALIZACIÓN DE SESIÓN GLOBAL ---
 if "vector_store" not in st.session_state:
@@ -14,10 +19,9 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_core.tools import Tool
+from langchain_core.tools import Tool, tool # <--- Importamos 'tool' decorador
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.tracers.stdout import ConsoleCallbackHandler
-from langchain_core.documents import Document # <--- NUEVO: Para crear docs desde Excel
 
 # Importaciones de LangGraph
 from langgraph.graph import StateGraph, END
@@ -25,9 +29,9 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph.message import add_messages
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Cerebro Médico Híbrido", page_icon="🧬") 
-st.title("🧬 Agente Híbrido: Protocolos + Directorio")
-st.markdown("Sube **PDFs (Manuales)** y tu **Excel (Directorio)**. El agente relacionará ambos.")
+st.set_page_config(page_title="Agente Médico Pro", page_icon="👨‍⚕️") 
+st.title("👨‍⚕️ Agente: Protocolos (PDF) + Directorio Local")
+st.markdown(f"**Modo:** PDFs en Memoria Vectorial + Directorio (`{RUTA_DIRECTORIO}`) en Disco Local.")
 
 # --- GESTIÓN DE CLAVES ---
 with st.sidebar:
@@ -37,176 +41,164 @@ with st.sidebar:
         st.stop()
     os.environ["OPENAI_API_KEY"] = api_key
     
-    if st.button("Borrar Memoria y Reiniciar"):
+    if st.button("Borrar Memoria PDFs"):
         st.session_state.vector_store = None
         st.session_state.messages = []
         st.rerun()
 
-# --- FUNCIÓN DE PROCESAMIENTO HÍBRIDA ---
-def process_files(uploaded_files):
+# --- 1. HERRAMIENTA DE DIRECTORIO LOCAL (La novedad) ---
+@tool
+def consultar_directorio_local(busqueda: str):
     """
-    Procesa tanto PDFs como EXCEL y los fusiona en un solo cerebro.
+    Consulta el directorio médico (Excel local) para encontrar especialistas, 
+    sedes, teléfonos o extensiones.
+    Input: Una palabra clave (ej: 'Cardiología', 'Norte', 'Juan').
     """
-    all_docs = [] # Aquí acumularemos todo: texto de PDFs y filas de Excel
+    if not os.path.exists(RUTA_DIRECTORIO):
+        return f"Error: No encuentro el archivo '{RUTA_DIRECTORIO}' en el sistema."
     
-    progress_text = "Procesando archivos y fusionando conocimientos..."
+    try:
+        # Leemos el archivo en tiempo real
+        df = pd.read_excel(RUTA_DIRECTORIO, engine='openpyxl')
+        
+        # Filtramos buscando la palabra clave en varias columnas a la vez
+        # (Nombre, Especialidad o Sede)
+        mask = (
+            df['Nombre Médico'].astype(str).str.contains(busqueda, case=False, na=False) |
+            df['Especialidad'].astype(str).str.contains(busqueda, case=False, na=False) |
+            df['Sede'].astype(str).str.contains(busqueda, case=False, na=False)
+        )
+        
+        resultados = df[mask]
+        
+        if resultados.empty:
+            return f"No encontré coincidencias para '{busqueda}' en el directorio."
+        
+        # Devolvemos los datos en formato texto
+        return f"Resultados del Directorio:\n{resultados.to_string(index=False)}"
+        
+    except Exception as e:
+        return f"Error al leer el directorio: {str(e)}"
+
+# --- 2. PROCESAMIENTO DE PDFs (Solo PDFs) ---
+def process_pdfs(uploaded_files):
+    """
+    Procesa SOLO PDFs para crear la base de conocimiento de protocolos.
+    """
+    all_docs = [] 
+    
+    progress_text = "Leyendo manuales y protocolos..."
     my_bar = st.progress(0, text=progress_text)
     total_files = len(uploaded_files)
     
     for i, file in enumerate(uploaded_files):
-        filename = file.name
+        # Procesamos solo si es PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(file.read())
+            tmp_path = tmp_file.name
         
-        # --- CASO 1: Es un EXCEL (.xlsx) ---
-        if filename.endswith(('.xlsx', '.xls')):
-            try:
-                df = pd.read_excel(file)
-                # Iteramos por cada médico para convertirlo en texto comprensible
-                for index, row in df.iterrows():
-                    # Creamos una "historia" para cada fila
-                    texto_medico = (
-                        f"DIRECTORIO MÉDICO - DETALLE DEL ESPECIALISTA:\n"
-                        f"Nombre: {row.get('Nombre Médico', 'N/A')}\n"
-                        f"Especialidad: {row.get('Especialidad', 'N/A')}\n"
-                        f"Sede: {row.get('Sede', 'N/A')}\n"
-                        f"Extensión telefónica: {row.get('Numero de extensión', 'N/A')}"
-                    )
-                    
-                    # Creamos el documento LangChain
-                    doc = Document(
-                        page_content=texto_medico,
-                        metadata={"source": filename, "type": "directorio_excel", "row": index}
-                    )
-                    all_docs.append(doc)
-            except Exception as e:
-                st.error(f"Error procesando Excel {filename}: {e}")
-
-        # --- CASO 2: Es un PDF ---
-        else:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(file.read())
-                tmp_path = tmp_file.name
-            
-            try:
-                loader = PyPDFLoader(tmp_path)
-                docs = loader.load()
-                # Añadimos metadatos extra para identificar que viene de PDF
-                for d in docs:
-                    d.metadata["type"] = "manual_pdf"
-                    d.metadata["source"] = filename
-                
-                all_docs.extend(docs)
-            except Exception as e:
-                st.error(f"Error procesando PDF {filename}: {e}")
-            finally:
-                os.remove(tmp_path)
+        try:
+            loader = PyPDFLoader(tmp_path)
+            docs = loader.load()
+            for d in docs:
+                d.metadata["source"] = file.name
+            all_docs.extend(docs)
+        except Exception as e:
+            st.error(f"Error en {file.name}: {e}")
+        finally:
+            os.remove(tmp_path)
         
-        # Actualizar barra
-        my_bar.progress((i + 1) / total_files, text=f"Integrando archivo {i+1} de {total_files}...")
+        my_bar.progress((i + 1) / total_files)
 
-    # 3. Dividir texto (Importante para los PDFs, irrelevante pero inocuo para el Excel)
+    if not all_docs:
+        return None
+
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(all_docs)
 
-    # 4. Crear Vector Store ÚNICO
     embeddings = OpenAIEmbeddings()
     vector_store = FAISS.from_documents(splits, embeddings)
     
     my_bar.empty()
     return vector_store
 
-# --- INTERFAZ DE CARGA ---
-# Aceptamos PDF y Excel
+# --- INTERFAZ DE CARGA (Solo PDFs) ---
 uploaded_files = st.file_uploader(
-    "Sube tus documentos (PDFs y Excel)", 
-    type=["pdf", "xlsx", "xls"], 
+    "Sube tus MANUALES o PROTOCOLOS (PDF)", 
+    type=["pdf"], 
     accept_multiple_files=True
 )
 
 if uploaded_files and st.session_state.vector_store is None:
-    with st.spinner("⏳ Fusionando el directorio médico con los protocolos..."):
-        st.session_state.vector_store = process_files(uploaded_files)
-    st.success(f"✅ Cerebro actualizado con {len(uploaded_files)} archivos.")
+    with st.spinner("⏳ Estudiando protocolos..."):
+        st.session_state.vector_store = process_pdfs(uploaded_files)
+    
+    if st.session_state.vector_store:
+        st.success(f"✅ Protocolos memorizados. Listo para consultas mixtas.")
 
-# --- DEFINICIÓN DE HERRAMIENTAS RAG ---
+# --- 3. DEFINICIÓN DEL AGENTE Y HERRAMIENTAS ---
+
+# Herramienta 1: Búsqueda en PDFs (Si existen)
+tools = [consultar_directorio_local] # Empezamos con la herramienta local
+
 if st.session_state.vector_store:
+    retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 5})
     
-    retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 6}) 
-    
-    def search_function(query: str):
+    def search_pdfs(query: str):
         docs = retriever.invoke(query)
-        results = []
-        for d in docs:
-            # Mostramos si la info viene del Excel o del PDF
-            tipo = d.metadata.get('type', 'desconocido')
-            source = d.metadata.get('source', 'Desconocido')
-            content = d.page_content
-            results.append(f"[Fuente: {source} ({tipo})]\n{content}")
-            
-        return "\n\n".join(results)
+        return "\n\n".join([f"[Fuente: {d.metadata.get('source')}]\n{d.page_content}" for d in docs])
 
     retrieve_tool = Tool(
-        name="knowledge_search",
-        func=search_function,
-        description="Usa esto para buscar información tanto en protocolos (PDF) como en el directorio de médicos (Excel)."
+        name="buscar_protocolos_pdf",
+        func=search_pdfs,
+        description="Usa esto para buscar información CLÍNICA, protocolos o guías en los PDFs subidos."
     )
+    tools.append(retrieve_tool)
 
-    tools = [retrieve_tool]
+# --- CONFIGURACIÓN DEL CEREBRO (LangGraph) ---
+class AgentState(TypedDict):
+    messages: Annotated[List, add_messages]
 
-    # --- DEFINICIÓN DEL AGENTE ---
-    class AgentState(TypedDict):
-        messages: Annotated[List, add_messages]
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+llm_with_tools = llm.bind_tools(tools)
 
-    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
-    llm_with_tools = llm.bind_tools(tools)
+def agent_node(state: AgentState):
+    return {"messages": [llm_with_tools.invoke(state["messages"])]}
 
-    def agent_node(state: AgentState):
-        return {"messages": [llm_with_tools.invoke(state["messages"])]}
+workflow = StateGraph(AgentState)
+workflow.add_node("agent", agent_node)
+workflow.add_node("tools", ToolNode(tools)) 
 
-    workflow = StateGraph(AgentState)
-    workflow.add_node("agent", agent_node)
-    workflow.add_node("tools", ToolNode(tools)) 
-    
-    workflow.set_entry_point("agent")
-    
-    workflow.add_conditional_edges(
-        "agent",
-        tools_condition,
-        {"tools": "tools", "__end__": END}
-    )
-    workflow.add_edge("tools", "agent")
-    
-    app = workflow.compile()
+workflow.set_entry_point("agent")
+workflow.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": END})
+workflow.add_edge("tools", "agent")
 
-    # --- CHAT INTERFACE ---
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+app = workflow.compile()
 
-    for msg in st.session_state.messages:
-        if isinstance(msg, HumanMessage):
-            st.chat_message("user").write(msg.content)
-        elif isinstance(msg, AIMessage) and msg.content:
-            st.chat_message("assistant").write(msg.content)
+# --- CHAT ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    user_input = st.chat_input("Ej: 'Tengo un paciente con dolor de pecho, ¿qué protocolo sigo y a quién llamo en la sede Norte?'")
+for msg in st.session_state.messages:
+    tipo = "user" if isinstance(msg, HumanMessage) else "assistant"
+    st.chat_message(tipo).write(msg.content)
 
-    if user_input:
-        st.chat_message("user").write(user_input)
-        st.session_state.messages.append(HumanMessage(content=user_input))
+user_input = st.chat_input("Pregunta algo (ej: 'Necesito un cardiólogo en Norte y el protocolo de dolor de pecho')")
 
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            placeholder.markdown("🔍 *Consultando cerebro híbrido...*")
-            
-            inputs = {"messages": st.session_state.messages}
-            
-            result = app.invoke(
-                inputs,
-                config={"callbacks": [ConsoleCallbackHandler()]}            
-            )
-            final_msg = result["messages"][-1].content
-            placeholder.markdown(final_msg)
-            
-            st.session_state.messages = result["messages"]
+if user_input:
+    st.chat_message("user").write(user_input)
+    st.session_state.messages.append(HumanMessage(content=user_input))
 
-else:
-    st.info("👆 Por favor sube el archivo Excel generado y algún PDF de prueba.")
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        placeholder.markdown("🤔 *Pensando...*")
+        
+        # Invocamos al agente
+        result = app.invoke(
+            {"messages": st.session_state.messages},
+            config={"callbacks": [ConsoleCallbackHandler()]}            
+        )
+        
+        final_msg = result["messages"][-1].content
+        placeholder.markdown(final_msg)
+        st.session_state.messages = result["messages"]
