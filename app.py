@@ -137,6 +137,10 @@ class AgentState(TypedDict):
     messages: Annotated[List, add_messages]
 
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+# llm = ChatOpenAI(model="gpt-4o", temperature=0)       # <--- Recomendado PRO
+# llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)  # <--- Recomendado AHORRO
+# llm = ChatOpenAI(model="o1-mini", temperature=1)      # <--- Recomendado LÓGICA (Ojo: temperature debe ser 1 en modelos o1)
+
 llm_with_tools = llm.bind_tools(tools)
 
 def agent_node(state: AgentState):
