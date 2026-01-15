@@ -5,11 +5,10 @@ from typing import Annotated, List
 from typing_extensions import TypedDict
 
 # --- INICIALIZACIÓN DE SESIÓN GLOBAL ---
-# Inicializa vector_store antes de cualquier acceso
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 
-# Importaciones de LangChain (El "Pegamento" de las capas)
+# Importaciones de LangChain
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -18,19 +17,15 @@ from langchain_core.tools import Tool
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.tracers.stdout import ConsoleCallbackHandler
 
-
-
-# Importaciones de LangGraph (La lógica de la Capa 2)
+# Importaciones de LangGraph
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph.message import add_messages
 
- # Cambia a True para ver logs detallados
-
-# --- CONFIGURACIÓN DE PÁGINA (Capa 1: Input/Output) ---
-st.set_page_config(page_title="Chat con tu PDF", page_icon="📄")
-st.title("📄 Agente de Análisis de Documentos")
-st.markdown("Sube un PDF y haz preguntas sobre su contenido usando RAG (Retrieval-Augmented Generation).")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Chat con Múltiples PDFs", page_icon="📚") # Icono cambiado a libros
+st.title("📚 Agente Multi-Documento")
+st.markdown("Sube **varios PDFs** y haz preguntas sobre su contenido combinado.")
 
 # --- GESTIÓN DE CLAVES ---
 with st.sidebar:
@@ -39,85 +34,104 @@ with st.sidebar:
         st.warning("Ingresa tu API Key para continuar.")
         st.stop()
     os.environ["OPENAI_API_KEY"] = api_key
-
-# --- ESTADO DE SESIÓN GLOBAL ---
-# Aquí guardamos el "Vector Store" para no reprocesar el PDF con cada pregunta
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = None
-
-# --- FUNCIÓN DE PROCESAMIENTO (Capa 3: PDF Parser + Capa 4: Vector Store) ---
-def process_pdf(uploaded_file):
-    """
-    Toma el archivo crudo, extrae texto y crea el índice vectorial.
-    """
-    # 1. Guardar archivo temporalmente (PyPDFLoader necesita ruta física)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(uploaded_file.read())
-        tmp_path = tmp_file.name
-
-    # 2. Cargar y dividir el texto (Chunking)
-    loader = PyPDFLoader(tmp_path)
-    docs = loader.load()
     
-    # Dividimos el texto en pedazos de 1000 caracteres con solapamiento
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    splits = text_splitter.split_documents(docs)
+    # Botón para reiniciar la memoria si quieres subir otros archivos
+    if st.button("Borrar Memoria y Subir Nuevos"):
+        st.session_state.vector_store = None
+        st.session_state.messages = []
+        st.rerun()
 
-    # 3. Crear Vector Store (Embeddings)
-    # Esto convierte texto en números para búsqueda semántica
+# --- FUNCIÓN DE PROCESAMIENTO (Modificada para múltiples archivos) ---
+def process_pdf_list(uploaded_files):
+    """
+    Toma una LISTA de archivos, extrae texto de todos y crea un único índice.
+    """
+    all_docs = [] # Lista para acumular el texto de TODOS los PDFs
+    
+    # Barra de progreso visual
+    progress_text = "Procesando archivos..."
+    my_bar = st.progress(0, text=progress_text)
+    
+    total_files = len(uploaded_files)
+    
+    # ### CAMBIO: Bucle para procesar cada archivo subido ###
+    for i, file in enumerate(uploaded_files):
+        # 1. Guardar temporalmente
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(file.read())
+            tmp_path = tmp_file.name
+            
+        # 2. Cargar texto
+        loader = PyPDFLoader(tmp_path)
+        docs = loader.load()
+        
+        # Agregamos los documentos de este PDF a la lista general
+        all_docs.extend(docs) 
+        
+        # Limpieza del archivo temporal
+        os.remove(tmp_path)
+        
+        # Actualizar barra de progreso
+        my_bar.progress((i + 1) / total_files, text=f"Leyendo archivo {i+1} de {total_files}...")
+
+    # 3. Dividir TODO el texto acumulado
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(all_docs)
+
+    # 4. Crear Vector Store único con toda la información
     embeddings = OpenAIEmbeddings()
     vector_store = FAISS.from_documents(splits, embeddings)
     
-    # Limpieza
-    os.remove(tmp_path)
+    my_bar.empty() # Limpiar barra de progreso
     return vector_store
 
-# --- INTERFAZ DE CARGA (Conexión Usuario -> Sistema) ---
-uploaded_file = st.file_uploader("Sube tu archivo PDF aquí", type="pdf")
+# --- INTERFAZ DE CARGA (Modificada) ---
+# ### CAMBIO: accept_multiple_files=True ###
+uploaded_files = st.file_uploader("Sube tus archivos PDF aquí", type="pdf", accept_multiple_files=True)
 
-if uploaded_file and st.session_state.vector_store is None:
-    with st.spinner("⏳ Procesando documento (Parseando e Indexando)..."):
-        st.session_state.vector_store = process_pdf(uploaded_file)
-    st.success("✅ Documento procesado y memorizado en la Capa 4.")
+if uploaded_files and st.session_state.vector_store is None:
+    # Solo procesamos si hay archivos y la memoria está vacía
+    with st.spinner("⏳ Procesando biblioteca de documentos..."):
+        st.session_state.vector_store = process_pdf_list(uploaded_files)
+    st.success(f"✅ {len(uploaded_files)} documentos procesados y memorizados.")
 
-# --- DEFINICIÓN DE HERRAMIENTAS RAG (Capa 3: Tool Layer) ---
+# --- DEFINICIÓN DE HERRAMIENTAS RAG ---
 if st.session_state.vector_store:
     
-    # 1. Crear el objeto buscador (Retriever) desde la memoria
-    retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 3})
+    # El retriever buscará en la mezcla de todos los documentos
+    retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 5}) # Aumenté k a 5 para tener más contexto
     
-    # 2. Crear una función "wrapper" local
-    # Esta función YA TIENE el retriever guardado en su memoria local (Closure).
-    # No necesita llamar a st.session_state, evitando el error de hilos.
     def search_function(query: str):
         docs = retriever.invoke(query)
-        return "\n\n".join([d.page_content for d in docs])
+        # Agregamos la fuente (nombre del archivo) a la respuesta para saber de qué PDF vino
+        results = []
+        for d in docs:
+            source = d.metadata.get('source', 'Desconocido')
+            content = d.page_content
+            results.append(f"[Fuente: {source}]\nContenido: {content}")
+            
+        return "\n\n".join(results)
 
-    # 3. Empaquetar manualmente la herramienta
     retrieve_tool = Tool(
         name="pdf_search",
         func=search_function,
-        description="Usa esta herramienta para buscar información relevante dentro del PDF subido. Úsala cuando te pregunten algo específico del documento."
+        description="Usa esta herramienta para buscar información en los documentos PDF subidos."
     )
 
     tools = [retrieve_tool]
 
-    # --- DEFINICIÓN DEL AGENTE (Capa 2: Agent Modules) ---
+    # --- DEFINICIÓN DEL AGENTE ---
     class AgentState(TypedDict):
         messages: Annotated[List, add_messages]
 
-    # Usamos gpt-3.5-turbo (o gpt-4o-mini si tienes saldo)
     llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
     llm_with_tools = llm.bind_tools(tools)
 
     def agent_node(state: AgentState):
         return {"messages": [llm_with_tools.invoke(state["messages"])]}
 
-    # Construcción del Grafo
     workflow = StateGraph(AgentState)
     workflow.add_node("agent", agent_node)
-    
-    # Creamos el nodo de herramientas con nuestra herramienta manual
     workflow.add_node("tools", ToolNode(tools)) 
     
     workflow.set_entry_point("agent")
@@ -131,7 +145,7 @@ if st.session_state.vector_store:
     
     app = workflow.compile()
 
-    # --- CHAT INTERFACE (Capa 1: Input/Output) ---
+    # --- CHAT INTERFACE ---
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -141,7 +155,7 @@ if st.session_state.vector_store:
         elif isinstance(msg, AIMessage) and msg.content:
             st.chat_message("assistant").write(msg.content)
 
-    user_input = st.chat_input("Pregunta algo sobre el PDF...")
+    user_input = st.chat_input("Pregunta algo sobre los documentos...")
 
     if user_input:
         st.chat_message("user").write(user_input)
@@ -149,11 +163,11 @@ if st.session_state.vector_store:
 
         with st.chat_message("assistant"):
             placeholder = st.empty()
-            placeholder.markdown("🔍 *Consultando la base de conocimiento...*")
+            placeholder.markdown("🔍 *Consultando la biblioteca...*")
             
-            # Ejecutar el grafo
             inputs = {"messages": st.session_state.messages}
             
+            # Usando el callback para debug en consola
             result = app.invoke(
                 inputs,
                 config={"callbacks": [ConsoleCallbackHandler()]}            
@@ -164,4 +178,4 @@ if st.session_state.vector_store:
             st.session_state.messages = result["messages"]
 
 else:
-    st.info("👆 Por favor sube un PDF para activar el cerebro del Agente.")
+    st.info("👆 Sube uno o varios PDFs para comenzar.")
