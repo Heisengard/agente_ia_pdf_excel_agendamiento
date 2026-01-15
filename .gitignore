@@ -13,3 +13,6 @@ __pycache__/
 
 # Claves y secretos
 .env
+
+#no subir la api key
+.streamlit/secrets.toml
