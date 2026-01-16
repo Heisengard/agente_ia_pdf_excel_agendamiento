@@ -8,8 +8,10 @@ from typing_extensions import TypedDict
 # --- CONFIGURACIÓN DE RUTAS ---
 # Usamos rutas relativas para compatibilidad
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-RUTA_DIRECTORIO = os.path.join(BASE_DIR, "data", "excel", "dataset_medicos_ficticio.xlsx")
-RUTA_OPORTUNIDAD = os.path.join(BASE_DIR, "data", "excel", "dataset_medicos_ficticio_oportunidad.xlsx") 
+#RUTA_DIRECTORIO = os.path.join(BASE_DIR, "data", "excel", "dataset_medicos_ficticio.xlsx")
+#RUTA_OPORTUNIDAD = os.path.join(BASE_DIR, "data", "excel", "dataset_medicos_ficticio_oportunidad.xlsx") 
+RUTA_DIRECTORIO = "data\excel\dataset_medicos_ficticio.xlsx" 
+RUTA_OPORTUNIDAD = "data\excel\dataset_medicos_ficticio_oportunidad.xlsx"
 
 # --- PROMPT DE PERSONALIDAD (CO-PILOTO) ---
 SYSTEM_PROMPT = """
