@@ -5,7 +5,7 @@
 ![LangChain](https://img.shields.io/badge/LangChain-RAG-green?logo=langchain&logoColor=white)
 ![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o-412991?logo=openai&logoColor=white)
 
-> **Un Asistente Inteligente (RAG + Tools) diseñado para potenciar a los agentes de Call Center Médico.**
+> **Un Asistente Inteligente (RAG + Tools) diseñado para potenciar el apoyo en el agendamiento de citas.**
 
 ## 💡 Sobre el Proyecto
 
@@ -41,7 +41,7 @@ El proyecto utiliza **LangGraph** para orquestar el flujo de decisiones del agen
 
 ---
 
-## 🚀 Instalación y Uso
+## 🚀 Instalación y Uso (Aún en proceso de mejora)
 
 Sigue estos pasos para ejecutar el proyecto en tu entorno local.
 
